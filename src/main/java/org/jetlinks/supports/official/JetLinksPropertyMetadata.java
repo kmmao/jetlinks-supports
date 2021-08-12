@@ -3,12 +3,11 @@ package org.jetlinks.supports.official;
 import com.alibaba.fastjson.JSONObject;
 import lombok.Getter;
 import lombok.Setter;
-import org.jetlinks.core.metadata.DataType;
-import org.jetlinks.core.metadata.DataTypeCodec;
-import org.jetlinks.core.metadata.PropertyMetadata;
+import org.jetlinks.core.metadata.*;
 import org.jetlinks.core.metadata.types.DataTypes;
 import org.jetlinks.core.metadata.types.UnknownType;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -54,7 +53,7 @@ public class JetLinksPropertyMetadata implements PropertyMetadata {
         this.name = another.getName();
         this.description = another.getDescription();
         this.dataType = another.getValueType();
-        this.expands = another.getExpands();
+        this.expands = another.getExpands() == null ? null : new HashMap<>(another.getExpands());
     }
 
     protected Optional<DataTypeCodec<DataType>> getDataTypeCodec(DataType dataType) {
@@ -118,5 +117,17 @@ public class JetLinksPropertyMetadata implements PropertyMetadata {
                            getValueType().getId(), " ", getId(), " /* ", getName(), " */ "
         );
 
+    }
+
+    @Override
+    public PropertyMetadata merge(PropertyMetadata another, MergeOption... option) {
+        JetLinksPropertyMetadata metadata = new JetLinksPropertyMetadata(this);
+        if (metadata.expands == null) {
+            metadata.expands = new HashMap<>();
+        }
+
+        MergeOption.ExpandsMerge.doWith(DeviceMetadataType.property, another.getExpands(), metadata.expands, option);
+
+        return metadata;
     }
 }

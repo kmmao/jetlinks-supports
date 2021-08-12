@@ -37,7 +37,7 @@ public abstract class AbstractDeviceOperationBroker implements DeviceOperationBr
             .<String, FluxProcessor<DeviceMessageReply, DeviceMessageReply>>removalListener(notify -> {
                 if (notify.getCause() == EXPIRED) {
                     try {
-                        log.debug("discard await reply message[{}] processor", notify.getKey());
+                        AbstractDeviceOperationBroker.log.debug("discard await reply message[{}] processor", notify.getKey());
                         notify.getValue().onComplete();
                     } catch (Throwable ignore) {
                     }
@@ -60,7 +60,7 @@ public abstract class AbstractDeviceOperationBroker implements DeviceOperationBr
                 .computeIfAbsent(id, ignore -> UnicastProcessor.create())
                 .timeout(timeout, Mono.error(() -> new DeviceOperationException(ErrorCode.TIME_OUT)))
                 .doFinally(signal -> {
-                    log.trace("reply device message {} {} take {}ms", deviceId, messageId, System.currentTimeMillis() - startWith);
+                    AbstractDeviceOperationBroker.log.trace("reply device message {} {} take {}ms", deviceId, messageId, System.currentTimeMillis() - startWith);
                     replyProcessor.remove(id);
                     fragmentCounter.remove(id);
                 });
@@ -89,10 +89,18 @@ public abstract class AbstractDeviceOperationBroker implements DeviceOperationBr
 
     @Override
     public Mono<Boolean> reply(DeviceMessageReply message) {
-        DeviceMessageTracer.trace(message,"reply.before");
+        DeviceMessageTracer.trace(message, "reply.before");
         if (StringUtils.isEmpty(message.getMessageId())) {
             log.warn("reply message messageId is empty: {}", message);
             return Mono.just(false);
+        }
+
+        Mono<Boolean> then = Mono.empty();
+        if (message instanceof ChildDeviceMessageReply) {
+            Message childDeviceMessage = ((ChildDeviceMessageReply) message).getChildDeviceMessage();
+            if (childDeviceMessage instanceof DeviceMessageReply) {
+                then = reply(((DeviceMessageReply) childDeviceMessage));
+            }
         }
         return Mono
                 .defer(() -> {
@@ -105,7 +113,8 @@ public abstract class AbstractDeviceOperationBroker implements DeviceOperationBr
                     return this
                             .doReply(message)
                             .thenReturn(true);
-                });
+                })
+                .then(then);
     }
 
     protected void handleReply(DeviceMessageReply message) {
@@ -154,6 +163,6 @@ public abstract class AbstractDeviceOperationBroker implements DeviceOperationBr
     }
 
     @Setter
-    private ReplyFailureHandler replyFailureHandler = (error, message) -> log.warn("unhandled reply message:{}", message, error);
+    private ReplyFailureHandler replyFailureHandler = (error, message) -> AbstractDeviceOperationBroker.log.warn("unhandled reply message:{}", message, error);
 
 }

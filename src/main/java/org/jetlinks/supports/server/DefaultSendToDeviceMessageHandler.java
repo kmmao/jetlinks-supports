@@ -18,8 +18,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import javax.annotation.Nonnull;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 @Slf4j
 @AllArgsConstructor
@@ -81,7 +83,10 @@ public class DefaultSendToDeviceMessageHandler {
                         // 没有传递header
                         // https://github.com/jetlinks/jetlinks-pro/issues/19
                         if (null != message.getHeaders()) {
-                            children.setHeaders(new ConcurrentHashMap<>(message.getHeaders()));
+                            Map<String, Object> newHeader = new ConcurrentHashMap<>(message.getHeaders());
+                            newHeader.remove("productId");
+                            newHeader.remove("deviceName");
+                            children.setHeaders(newHeader);
                         }
                         message.addHeader(Headers.dispatchToParent, true);
                         ChildrenDeviceSession childrenDeviceSession = sessionManager.getSession(operator.getDeviceId(), deviceId);
@@ -126,30 +131,31 @@ public class DefaultSendToDeviceMessageHandler {
             log.warn("unsupported send message to {}", session);
             return;
         }
+        DeviceSession fSession = session.unwrap(DeviceSession.class);
         boolean forget = message.getHeader(Headers.sendAndForget).orElse(false);
 
-        session
+        Mono<Boolean> handler = fSession
                 .getOperator()
                 .getProtocol()
-                .flatMap(protocolSupport -> protocolSupport.getMessageCodec(session.getTransport()))
+                .flatMap(protocolSupport -> protocolSupport.getMessageCodec(fSession.getTransport()))
                 .flatMapMany(codec -> codec.encode(new ToDeviceMessageContext() {
                     @Override
                     public Mono<Boolean> sendToDevice(@Nonnull EncodedMessage message) {
-                        return session.send(message);
+                        return fSession.send(message);
                     }
 
                     @Override
                     public Mono<Void> disconnect() {
                         return Mono.fromRunnable(() -> {
-                            session.close();
-                            sessionManager.unregister(session.getId());
+                            fSession.close();
+                            sessionManager.unregister(fSession.getId());
                         });
                     }
 
                     @Nonnull
                     @Override
                     public DeviceSession getSession() {
-                        return session;
+                        return fSession;
                     }
 
                     @Override
@@ -165,7 +171,7 @@ public class DefaultSendToDeviceMessageHandler {
 
                     @Override
                     public DeviceOperator getDevice() {
-                        return session.getOperator();
+                        return fSession.getOperator();
                     }
 
                     @Override
@@ -178,7 +184,7 @@ public class DefaultSendToDeviceMessageHandler {
                     public Mono<Void> reply(@Nonnull Publisher<? extends DeviceMessage> replyMessage) {
                         alreadyReply.set(true);
                         return Flux.from(replyMessage)
-                                   .flatMap(msg -> decodedClientMessageHandler.handleMessage(session.getOperator(), msg))
+                                   .flatMap(msg -> decodedClientMessageHandler.handleMessage(fSession.getOperator(), msg))
                                    .then();
                     }
                 }))
@@ -215,12 +221,38 @@ public class DefaultSendToDeviceMessageHandler {
                         log.error(error.getMessage(), error);
                     }
                     return forget ? Mono.empty() : this.doReply(reply.error(error));
-                })
-                .subscribe();
+                });
+
+        //自设备断开连接
+        if (message instanceof ChildDeviceMessage && ((ChildDeviceMessage) message).getChildDeviceMessage() instanceof DisconnectDeviceMessage) {
+            ChildDeviceMessage child = ((ChildDeviceMessage) message);
+            DisconnectDeviceMessage msg = (DisconnectDeviceMessage) ((ChildDeviceMessage) message).getChildDeviceMessage();
+
+            handler = registry
+                    .getDevice(msg.getDeviceId())
+                    .flatMap(operator -> operator
+                            .getSelfConfig(DeviceConfigKey.selfManageState)
+                            .filter(Boolean.FALSE::equals)
+                            .map(self -> sessionManager
+                                    .unRegisterChildren(deviceId, operator.getDeviceId())
+                                    .then(doReply(reply.success()))
+                            ))
+                    .defaultIfEmpty(handler)
+                    .flatMap(Function.identity());
+        }
+
+        handler.subscribe();
     }
 
 
     private Mono<Boolean> doReply(DeviceMessageReply reply) {
+        Mono<Boolean> then = Mono.just(true);
+        if (reply instanceof ChildDeviceMessageReply) {
+            Message message = ((ChildDeviceMessageReply) reply).getChildDeviceMessage();
+            if (message instanceof DeviceMessageReply) {
+                then = doReply(((DeviceMessageReply) message));
+            }
+        }
         return handler
                 .reply(reply)
                 .as(mo -> {
@@ -229,7 +261,8 @@ public class DefaultSendToDeviceMessageHandler {
                     }
                     return mo;
                 })
-                .doOnError((error) -> log.error("reply message error", error));
+                .doOnError((error) -> log.error("reply message error", error))
+                .then(then);
     }
 
 }

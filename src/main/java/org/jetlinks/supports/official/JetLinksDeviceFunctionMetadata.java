@@ -3,10 +3,8 @@ package org.jetlinks.supports.official;
 import com.alibaba.fastjson.JSONObject;
 import lombok.Getter;
 import lombok.Setter;
-import org.jetlinks.core.metadata.DataType;
-import org.jetlinks.core.metadata.FunctionMetadata;
-import org.jetlinks.core.metadata.Jsonable;
-import org.jetlinks.core.metadata.PropertyMetadata;
+import org.apache.commons.collections.CollectionUtils;
+import org.jetlinks.core.metadata.*;
 import org.jetlinks.core.metadata.types.DataTypes;
 import org.jetlinks.core.metadata.types.UnknownType;
 
@@ -50,7 +48,8 @@ public class JetLinksDeviceFunctionMetadata implements FunctionMetadata {
     @Setter
     private Map<String, Object> expands;
 
-    public JetLinksDeviceFunctionMetadata(){}
+    public JetLinksDeviceFunctionMetadata() {
+    }
 
     public JetLinksDeviceFunctionMetadata(JSONObject jsonObject) {
         fromJson(jsonObject);
@@ -60,7 +59,7 @@ public class JetLinksDeviceFunctionMetadata implements FunctionMetadata {
         this.id = another.getId();
         this.name = another.getName();
         this.description = another.getDescription();
-        this.expands = getExpands();
+        this.expands = another.getExpands()==null?null:new HashMap<>(another.getExpands());
         this.another = another;
         this.async = another.isAsync();
     }
@@ -141,5 +140,39 @@ public class JetLinksDeviceFunctionMetadata implements FunctionMetadata {
         this.description = json.getString("description");
         this.async = json.getBooleanValue("async");
         this.expands = json.getJSONObject("expands");
+    }
+
+    @Override
+    public FunctionMetadata merge(FunctionMetadata another, MergeOption... option) {
+        JetLinksDeviceFunctionMetadata function = new JetLinksDeviceFunctionMetadata(this);
+        if (function.expands == null) {
+            function.expands = new HashMap<>();
+        }
+        MergeOption.ExpandsMerge.doWith(DeviceMetadataType.function, another.getExpands(), function.expands, option);
+
+        Map<String, PropertyMetadata> inputs = new LinkedHashMap<>();
+
+        if (CollectionUtils.isNotEmpty(function.getInputs())) {
+            for (PropertyMetadata input : function.getInputs()) {
+                inputs.put(input.getId(), input);
+            }
+        }
+
+        if (CollectionUtils.isNotEmpty(another.getInputs())) {
+            for (PropertyMetadata input : another.getInputs()) {
+                inputs.compute(input.getId(), (k, v) -> {
+                    if (v == null) {
+                        return input;
+                    }
+                    if (MergeOption.has(MergeOption.ignoreExists, option)) {
+                        return v;
+                    }
+                    return v.merge(input,option);
+                });
+            }
+        }
+
+        function.inputs = new ArrayList<>(inputs.values());
+        return function;
     }
 }

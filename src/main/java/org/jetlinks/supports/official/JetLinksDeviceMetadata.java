@@ -1,6 +1,7 @@
 package org.jetlinks.supports.official;
 
 import com.alibaba.fastjson.JSONObject;
+import io.vavr.Function3;
 import lombok.Getter;
 import lombok.Setter;
 import org.jetlinks.core.metadata.*;
@@ -52,17 +53,22 @@ public class JetLinksDeviceMetadata implements DeviceMetadata {
         this.properties = another.getProperties()
                                  .stream()
                                  .map(JetLinksPropertyMetadata::new)
-                                 .collect(Collectors.toMap(JetLinksPropertyMetadata::getId, Function.identity(), (a, b) -> a,LinkedHashMap::new));
+                                 .collect(Collectors.toMap(JetLinksPropertyMetadata::getId, Function.identity(), (a, b) -> a, LinkedHashMap::new));
 
         this.functions = another.getFunctions()
                                 .stream()
                                 .map(JetLinksDeviceFunctionMetadata::new)
-                                .collect(Collectors.toMap(JetLinksDeviceFunctionMetadata::getId, Function.identity(), (a, b) -> a,LinkedHashMap::new));
+                                .collect(Collectors.toMap(JetLinksDeviceFunctionMetadata::getId, Function.identity(), (a, b) -> a, LinkedHashMap::new));
 
         this.events = another.getEvents()
                              .stream()
                              .map(JetLinksEventMetadata::new)
-                             .collect(Collectors.toMap(JetLinksEventMetadata::getId, Function.identity(), (a, b) -> a,LinkedHashMap::new));
+                             .collect(Collectors.toMap(JetLinksEventMetadata::getId, Function.identity(), (a, b) -> a, LinkedHashMap::new));
+
+        this.tags = another.getTags()
+                             .stream()
+                             .map(JetLinksPropertyMetadata::new)
+                             .collect(Collectors.toMap(JetLinksPropertyMetadata::getId, Function.identity(), (a, b) -> a, LinkedHashMap::new));
 
     }
 
@@ -132,11 +138,11 @@ public class JetLinksDeviceMetadata implements DeviceMetadata {
             events = Optional
                     .ofNullable(jsonObject.getJSONArray("events"))
                     .map(Collection::stream)
-                    .<Map<String,EventMetadata>>map(stream -> stream
+                    .<Map<String, EventMetadata>>map(stream -> stream
                             .map(JSONObject.class::cast)
                             .map(JetLinksEventMetadata::new)
                             .map(EventMetadata.class::cast)
-                            .collect(Collectors.toMap(EventMetadata::getId, Function.identity(), (a, b) -> a,LinkedHashMap::new))
+                            .collect(Collectors.toMap(EventMetadata::getId, Function.identity(), (a, b) -> a, LinkedHashMap::new))
                     )
                     .orElse(Collections.emptyMap());
         }
@@ -194,6 +200,7 @@ public class JetLinksDeviceMetadata implements DeviceMetadata {
         json.put("properties", getProperties().stream().map(Jsonable::toJson).collect(Collectors.toList()));
         json.put("functions", getFunctions().stream().map(Jsonable::toJson).collect(Collectors.toList()));
         json.put("events", getEvents().stream().map(Jsonable::toJson).collect(Collectors.toList()));
+        json.put("tags", getTags().stream().map(Jsonable::toJson).collect(Collectors.toList()));
         json.put("expands", expands);
         return json;
     }
@@ -204,6 +211,7 @@ public class JetLinksDeviceMetadata implements DeviceMetadata {
         this.properties = null;
         this.events = null;
         this.functions = null;
+        this.tags = null;
         this.id = json.getString("id");
         this.name = json.getString("name");
         this.description = json.getString("description");
@@ -211,24 +219,56 @@ public class JetLinksDeviceMetadata implements DeviceMetadata {
 
     }
 
+    private <V extends Metadata> void doMerge(Map<String, V> map,
+                                              V value,
+                                              Function3<V, V, MergeOption[], V> mergeFunction,
+                                              MergeOption... options) {
+
+        map.compute(value.getId(), (k, old) -> {
+            if (old == null) {
+                return value;
+            }
+            //忽略已存在的物模型
+            if (MergeOption.has(MergeOption.ignoreExists, options)) {
+                return old;
+            }
+            return mergeFunction.apply(old, value, options);
+        });
+
+    }
+
     @Override
-    public DeviceMetadata merge(DeviceMetadata metadata) {
+    public DeviceMetadata merge(DeviceMetadata metadata, MergeOption... options) {
         JetLinksDeviceMetadata deviceMetadata = new JetLinksDeviceMetadata(this);
 
+        if (MergeOption.has(MergeOption.overwriteProperty, options)) {
+            deviceMetadata.properties.clear();
+        }
+
         for (PropertyMetadata property : metadata.getProperties()) {
-            deviceMetadata.properties.put(property.getId(), property);
+            doMerge(deviceMetadata.properties, property, PropertyMetadata::merge, options);
+        }
+        //属性过滤
+        if (MergeOption.PropertyFilter.has(options)) {
+            Map<String, PropertyMetadata> temp = new LinkedHashMap<>(deviceMetadata.properties);
+            deviceMetadata.properties.clear();
+            for (Map.Entry<String, PropertyMetadata> entry : temp.entrySet()) {
+                if (MergeOption.PropertyFilter.doFilter(entry.getValue(), options)) {
+                    deviceMetadata.properties.put(entry.getKey(), entry.getValue());
+                }
+            }
         }
 
         for (FunctionMetadata func : metadata.getFunctions()) {
-            deviceMetadata.functions.put(func.getId(), func);
+            doMerge(deviceMetadata.functions, func, FunctionMetadata::merge, options);
         }
 
         for (EventMetadata event : metadata.getEvents()) {
-            deviceMetadata.events.put(event.getId(), event);
+            doMerge(deviceMetadata.events, event, EventMetadata::merge, options);
         }
 
         for (PropertyMetadata tag : metadata.getTags()) {
-            deviceMetadata.tags.put(tag.getId(), tag);
+            doMerge(deviceMetadata.tags, tag, PropertyMetadata::merge, options);
         }
 
         return deviceMetadata;
